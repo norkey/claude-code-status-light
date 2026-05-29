@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""SwiftBar plugin: Claude Code session status indicator (multi-dot with initials)."""
+"""SwiftBar plugin: Claude Code session status indicator (multi-dot)."""
 import json
 import os
 import time
 
 STATUS_DIR = os.path.expanduser("~/.claude/status")
-SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
-
 STALE_SECONDS = {
-    "working": 120,
-    "idle": 1800,
-    "attention": 600,
+    "working": 3600,    # 1 hour — process-alive check is the real guard
+    "idle": 3600,       # 1 hour
+    "attention": 3600,  # 1 hour
 }
 
 COLORS = {
-    "idle": "#34C759",
-    "working": "#FF9500",
-    "attention": "#FF3B30",
+    "idle": "#34C759",       # green
+    "working": "#FF9500",    # yellow/orange
+    "attention": "#FF3B30",  # red
 }
 
 PRIORITY = {"attention": 0, "working": 1, "idle": 2}
+
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
 
 def is_process_alive(pid):
@@ -63,15 +64,19 @@ def load_sessions():
             with open(path) as fh:
                 data = json.load(fh)
             session_id = data.get("session_id", "")
+            # If session process is alive, always show it
             if session_id in alive_ids:
                 sessions.append(data)
                 continue
+            # Dead process: hide if stale, clean up if very old (>1h)
             age = now - data.get("updated", 0)
-            status = data.get("status", "working")
-            max_age = STALE_SECONDS.get(status, 120)
-            if age > max_age:
+            if age > 3600:
                 os.remove(path)
                 continue
+            status = data.get("status", "working")
+            max_age = STALE_SECONDS.get(status, 3600)
+            if age > max_age:
+                continue  # hide but don't delete yet
             sessions.append(data)
         except (json.JSONDecodeError, OSError):
             continue
@@ -100,15 +105,28 @@ def render():
         print("No active Claude Code sessions")
         return
 
+    dots = []
+    for s in sessions:
+        color = COLORS.get(s.get("status", "idle"), "#8E8E93")
+        dots.append(f":circle.fill: | sfcolor={color} size=10")
+
+    # Menu bar: colored dots using SF Symbols
+    # SwiftBar supports inline SF symbols but simpler to use emoji-style
     bar_parts = []
     for s in sessions:
         status = s.get("status", "idle")
+        # Debounce: if idle for less than 3s, still show as working (avoids flicker on internal turn boundaries)
+        if status == "idle":
+            since = s.get("since", 0)
+            if time.time() - since < 3:
+                status = "working"
         if status == "attention":
             dot = "🔴"
         elif status == "working":
             dot = "🟡"
         else:
             dot = "🟢"
+        # First letter of session title, fallback to directory name
         title = s.get("title", "")
         if title:
             initial = title[0].upper()
@@ -124,6 +142,8 @@ def render():
     status_emoji = {"attention": "🔴", "working": "🟡", "idle": "🟢"}
     for s in sessions:
         status = s.get("status", "idle")
+        if status == "idle" and time.time() - s.get("since", 0) < 3:
+            status = "working"
         title = s.get("title", "") or s.get("label", s.get("dir", "unknown"))
         elapsed = int(time.time() - s.get("since", time.time()))
         mins = elapsed // 60
